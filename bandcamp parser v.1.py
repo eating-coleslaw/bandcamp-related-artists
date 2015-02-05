@@ -30,6 +30,7 @@ TAG_QUEUE = deque([])
 OPENER = urllib2.build_opener()
 OPENER.addheaders = [('User-agent', 'Mozilla/5.0')]
 MAX_TAG_PAGES = 3
+SOURCE_TAGS = []
 
 def main():
     pass
@@ -73,7 +74,7 @@ def scrape_html(url):
     try:
         response = OPENER.open(url)
         if response.code == 200:
-            print "\nScraping %s\n" % url
+            print "Scraping %s" % url
             html = response.read()
         else:
             print "Invalid URL: %s \n" % url
@@ -86,7 +87,6 @@ def parse_music_page(soup):
     for tag in soup.find_all('li', class_='square '):
         for link in tag.find_all('a'):
             album = link.get('href')
-            print(album)
             URL_QUEUE.append(check_url_protocol(SOURCE_URL) + album)
 
 def get_album_tags(soup, artist):
@@ -95,10 +95,13 @@ def get_album_tags(soup, artist):
         tag_url = tag.get('href')
         tag_string = tag_url[24: ].replace("-", " ") # get the tag from the tag url
         #print tag_string + " --- " + tag_url
-        artist.update_tags(tag_string)
         if artist.same_artist(SESSION_ARTISTS.get_source_artist()):
+            artist.update_tags(tag_string)
             if [tag_url, tag_string] not in TAG_QUEUE:
+                SOURCE_TAGS.append(tag_string)
                 TAG_QUEUE.append([tag_url, tag_string])
+        elif tag_string in SOURCE_TAGS:
+            artist.update_tages(tag_string)
 
 def get_clean_band_url(url):
     """Convert album/track url to base band url."""
@@ -113,17 +116,14 @@ def parse_tag_pages(url, tag):
         band_name = album.find(class_='itemsubtext').get_text()
         band_url = get_clean_band_url(album_url)
         SESSION_ARTISTS.add_artist(band_name, band_url)
-        print band_name + " --- " + album_url
-    #if soup.find(class_='nextprev next') != None:
+        #print band_name + " --- " + album_url
     try:
-        #if soup.find(class_='nextprev next').a != None:
         next_page = soup.find(class_='nextprev next').a.get('href')
         if int(next_page[-1:]) <= MAX_TAG_PAGES:
-            print next_page
             parse_tag_pages(url[ :-7] + next_page, tag)
         else:
             print "\nFinished scraping %s: page limit reached.\n" % tag 
-    except AttributeError: # else:
+    except AttributeError:
         print "\nFinished scraping %s: no more pages.\n" % tag
         
 def make_soup(url):
@@ -152,7 +152,7 @@ class Artist:
         if tag not in self.tag_dictionary:
             self.tag_dictionary[tag] = 1
         else:
-            self.tag_dictionary[tag] += 1
+            self.tag_dictionary[tag] = self.tag_dictionary[tag] + 1
             
     def same_artist(self, ref_artist):
         #use unique band url to check if two artists are the same
@@ -210,20 +210,28 @@ SOURCE_NAME = get_source_artist_name(SOURCE_MUSIC_URL)
 
 SESSION_ARTISTS = Session_Artists(SOURCE_NAME, SOURCE_MUSIC_URL)
 
+
+    #print tag
+    #SOURCE_TAGS.append(tag)
+
 print SESSION_ARTISTS.get_source_artist().get_name()
 
-album_soup = make_soup(URL_QUEUE.popleft())
-get_album_tags(album_soup, SESSION_ARTISTS.get_source_artist())
+"""Get tags from all source artist's albums."""
+while len(URL_QUEUE) > 0:
+    album_soup = make_soup(URL_QUEUE.popleft())
+    get_album_tags(album_soup, SESSION_ARTISTS.get_source_artist())
+    
+"""Get artists from all source tag pages."""
 while len(TAG_QUEUE) > 0:
     tag = TAG_QUEUE.popleft()
     tag_name = tag[1]
     tag_url = tag[0]
-    #print first_url
-    #tag_soup = BeautifulSoup(scrape_html(first_url))
-    #print tag_soup.prettify()
     parse_tag_pages(tag_url + '?page=1', tag_name)
 
 #for artist in SESSION_ARTISTS.get_artist_list():
 #print artist.get_url()
 print SESSION_ARTISTS.session_len()
         #print artist.get_name() + ' --- ' + artist.get_tag_dictionary()[tag]
+
+print SESSION_ARTISTS.get_source_artist().get_tag_dictionary()
+print SOURCE_TAGS
