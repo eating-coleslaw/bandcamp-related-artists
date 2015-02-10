@@ -2,6 +2,7 @@ import urllib2  # html scraper
 from bs4 import BeautifulSoup  # html parser
 import re  # regex module
 from collections import deque  # keep track of urls to scrape & parse
+import heapq
 
 import sys  # exit quits program prematurely in event of error
 import sqlite3  # allows interaction with sql database (henceforth db)
@@ -24,15 +25,20 @@ import itertools  #count function is convenient iterator
     
 
 
-SOURCE_URL = "radiatorhospital.bandcamp.com"  #will become main program input
+SOURCE_URL = "spazzkid.bandcamp.com"  #will become main program input
 URL_QUEUE = deque([])
 TAG_QUEUE = deque([])
 OPENER = urllib2.build_opener()
 OPENER.addheaders = [('User-agent', 'Mozilla/5.0')]
-MAX_TAG_PAGES = 3
+MAX_TAG_PAGES = 1
+MAX_ALBUMS = 5
 SOURCE_TAGS = []
 
 def main():
+    SOURCE_URL
+    URL_QUEUE = deque([])
+    TAG_QUEUE = deque([])
+    SOURCE_TAGS = []
     pass
 
 
@@ -74,7 +80,7 @@ def scrape_html(url):
     try:
         response = OPENER.open(url)
         if response.code == 200:
-            print "Scraping %s" % url
+            #print "Scraping %s" % url
             html = response.read()
         else:
             print "Invalid URL: %s \n" % url
@@ -82,18 +88,24 @@ def scrape_html(url):
         print "Failed to open %s \n" % url
     return html
 
-def parse_music_page(soup):
+def parse_music_page(soup, url):
     """Find/add all albumes on band's music page to URL_QUEUE."""
+    album_count = 0
     for tag in soup.find_all('li', class_='square '):
         for link in tag.find_all('a'):
-            album = link.get('href')
-            URL_QUEUE.append(check_url_protocol(SOURCE_URL) + album)
+            if album_count <= MAX_ALBUMS:
+                album = link.get('href')
+                URL_QUEUE.append(check_url_protocol(url) + album)
+                album_count += 1
+            else: 
+                return
 
 def get_album_tags(soup, artist):
     """Find album's tags and add their urls and name to TAG_QUEUE."""
     for tag in soup.find_all('a', class_='tag'):
         tag_url = tag.get('href')
-        tag_string = tag_url[24: ].replace("-", " ") # get the tag from the tag url
+        pretag_url = re.compile('(.*)(.bandcamp.com/tag/)')
+        tag_string = re.sub(pretag_url, "", tag_url).replace("-", " ") # get the tag from the tag url
         #print tag_string + " --- " + tag_url
         if artist.same_artist(SESSION_ARTISTS.get_source_artist()):
             artist.update_tags(tag_string)
@@ -101,7 +113,7 @@ def get_album_tags(soup, artist):
                 SOURCE_TAGS.append(tag_string)
                 TAG_QUEUE.append([tag_url, tag_string])
         elif tag_string in SOURCE_TAGS:
-            artist.update_tages(tag_string)
+            artist.update_tags(tag_string)
 
 def get_clean_band_url(url):
     """Convert album/track url to base band url."""
@@ -114,6 +126,7 @@ def parse_tag_pages(url, tag):
     for album in soup.find_all("li", class_="item"):
         album_url = album.a.get("href")
         band_name = album.find(class_='itemsubtext').get_text()
+        #print band_name
         band_url = get_clean_band_url(album_url)
         SESSION_ARTISTS.add_artist(band_name, band_url)
         #print band_name + " --- " + album_url
@@ -122,9 +135,11 @@ def parse_tag_pages(url, tag):
         if int(next_page[-1:]) <= MAX_TAG_PAGES:
             parse_tag_pages(url[ :-7] + next_page, tag)
         else:
-            print "\nFinished scraping %s: page limit reached.\n" % tag 
+            pass
+            #print "\nFinished scraping %s: page limit reached.\n" % tag 
     except AttributeError:
-        print "\nFinished scraping %s: no more pages.\n" % tag
+        pass
+        #print "\nFinished scraping %s: no more pages.\n" % tag
         
 def make_soup(url):
     return BeautifulSoup(scrape_html(url))
@@ -146,10 +161,14 @@ class Artist:
          self.artist_name = name
          self.artist_url = url
          self.tag_dictionary = {}
+         self.total_common_tag_count = 0
+         self.unique_common_tag_count = 0
         
     def update_tags(self, tag):
         #updates tag count or adds new tag to dictionary
+        self.total_common_tag_count += 1
         if tag not in self.tag_dictionary:
+            self.unique_common_tag_count += 1
             self.tag_dictionary[tag] = 1
         else:
             self.tag_dictionary[tag] = self.tag_dictionary[tag] + 1
@@ -160,6 +179,18 @@ class Artist:
             return True
         else:
             return False
+            
+    def get_index(self):
+        try:
+            return self.total_common_tag_count/self.unique_common_tag_count
+        except ZeroDivisionError:
+            return 0
+            
+    def get_unique_tag_count(self):
+        return self.unique_common_tag_count
+        
+    def get_common_tag_count(self):
+        return self.total_common_tag_count
             
     def get_name(self):
         return  self.artist_name
@@ -184,14 +215,14 @@ class Session_Artists:
     
     def add_artist(self, name, url):
         new_artist = Artist(name, url)
-        if not self.artist_included(new_artist):
+        if not self.artist_included(new_artist) and not new_artist.same_artist(self.source_artist):
             self.artist_list.append(new_artist)
         
     def artist_included(self, new_artist):
         for artist in self.artist_list:
             if new_artist.same_artist(artist):
                 return True
-        return False           
+        return False        
                 
     def get_artist_list(self):
         return self.artist_list
@@ -204,7 +235,7 @@ class Session_Artists:
         
 SOURCE_MUSIC_URL = prepare_source_band_url(SOURCE_URL)
 music_soup = make_soup(SOURCE_MUSIC_URL)
-parse_music_page(music_soup)
+parse_music_page(music_soup, SOURCE_URL)
 
 SOURCE_NAME = get_source_artist_name(SOURCE_MUSIC_URL)
 
@@ -214,19 +245,58 @@ SESSION_ARTISTS = Session_Artists(SOURCE_NAME, SOURCE_MUSIC_URL)
     #print tag
     #SOURCE_TAGS.append(tag)
 
-print SESSION_ARTISTS.get_source_artist().get_name()
+print "Source Artist:", SESSION_ARTISTS.get_source_artist().get_name() + "\n"
 
 """Get tags from all source artist's albums."""
+
+print "Getting Source Artist tags.\n"
 while len(URL_QUEUE) > 0:
-    album_soup = make_soup(URL_QUEUE.popleft())
-    get_album_tags(album_soup, SESSION_ARTISTS.get_source_artist())
+    try:
+        album_soup = make_soup(URL_QUEUE.popleft())
+        get_album_tags(album_soup, SESSION_ARTISTS.get_source_artist())
+    except urllib2.URLError:
+        pass
+    
     
 """Get artists from all source tag pages."""
+
+print "Going through tag pages.\n"
 while len(TAG_QUEUE) > 0:
-    tag = TAG_QUEUE.popleft()
-    tag_name = tag[1]
-    tag_url = tag[0]
-    parse_tag_pages(tag_url + '?page=1', tag_name)
+    try:
+        tag = TAG_QUEUE.popleft()
+        tag_name = tag[1]
+        tag_url = tag[0]
+        parse_tag_pages(tag_url + '?page=1', tag_name)
+    except urllib2.URLError:
+        pass
+    
+    
+"""Go through SESSION_ARTISTS' music pages -> albums -> tags."""
+
+print "Going through artist pages.\n"
+print "SESSION_ARTISTS:", len(SESSION_ARTISTS.get_artist_list())
+count = 0
+error_count = 0
+for artist in SESSION_ARTISTS.get_artist_list():
+    #print artist.get_name()
+    try:
+        music_soup = make_soup( make_music_page_url(artist.get_url()) )
+        parse_music_page(music_soup, artist.get_url())
+        while len(URL_QUEUE) > 0:
+            count += 1
+            #print count
+            url = URL_QUEUE.popleft()
+            #print url
+            album_soup = make_soup( url )
+            get_album_tags(album_soup, artist)
+            if ( count % 25 == 0):
+                print count
+        #print artist.get_name()
+    except urllib2.URLError:
+        error_count += 1
+        pass
+        
+print "\ndone looking at artists: %d errors\n" % error_count
 
 #for artist in SESSION_ARTISTS.get_artist_list():
 #print artist.get_url()
@@ -235,3 +305,12 @@ print SESSION_ARTISTS.session_len()
 
 print SESSION_ARTISTS.get_source_artist().get_tag_dictionary()
 print SOURCE_TAGS
+
+SESSION_HEAP = []
+#heapq.heapify(SESSION_HEAP)
+for artist in SESSION_ARTISTS.get_artist_list():
+    #print artist.get_unique_tag_count()
+    heapq.heappush(SESSION_HEAP, ((100-artist.get_common_tag_count()), artist.get_name(), artist.get_url()))
+for a in range(0,11):
+    print heapq.heappop(SESSION_HEAP)
+    
