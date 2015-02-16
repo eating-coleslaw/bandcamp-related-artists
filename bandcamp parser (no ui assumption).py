@@ -3,9 +3,10 @@ from bs4 import BeautifulSoup  # html parser
 import re  # regex module
 from collections import deque  # keep track of urls to scrape & parse
 import heapq
+import sqlite3  # allows interaction with sql database (henceforth db)
+import time
 
 import sys  # exit quits program prematurely in event of error
-import sqlite3  # allows interaction with sql database (henceforth db)
 import datetime  # strptime and strftime convert between date formats
 import time  # sleep allows slight pause after each request to bandcamp servers
 import numpy  # random.exponential determines variable sleep time between server
@@ -24,8 +25,9 @@ import itertools  #count function is convenient iterator
     8. sort database based on tag count'''
     
 
-
-SOURCE_URL = "https://mishkanyc.bandcamp.com/music"  #will become main program input
+#Global Variables
+SOURCE_URL = "https://michellezauner.bandcamp.com/music"  #will become main program input
+database_name = "michellezauner"
 URL_QUEUE = deque([])
 TAG_QUEUE = deque([])
 OPENER = urllib2.build_opener()
@@ -33,6 +35,8 @@ OPENER.addheaders = [('User-agent', 'Mozilla/5.0')]
 MAX_TAG_PAGES = 2
 MAX_ALBUMS = 10
 SOURCE_TAGS = []
+AVG_SECS_BETWEEN_REQUESTS = 3
+
 
 def main():
     SOURCE_URL
@@ -55,7 +59,16 @@ def clean_url(url):
     return cleaned_band_url
     
 def make_soup(url):
-    return BeautifulSoup(scrape_html(url))
+    attempts = 0
+    while attempts < 3:
+        try:
+            soup = BeautifulSoup(scrape_html(url))
+            return soup
+        except:
+            attempts += 1
+            time.sleep(numpy.random.exponential(AVG_SECS_BETWEEN_REQUESTS, 1))  #pause between server requests
+    print "Failed to scrape %s" % url
+    return None
         
 def get_source_artist_name(url):
     """Gets name of the source artist off of its music page."""
@@ -81,8 +94,9 @@ def scrape_html(url):
 def parse_music_page(url, artist):
     """Find/add all albumes on band's music page to URL_QUEUE."""
     print "made it to parse_music_page"
-    soup = make_soup(url)
+    print "Got music soup"
     album_count = 0
+    soup = make_soup(url)
     for album in soup.find_all('li', class_='square first-four'):
         for link in album.find_all('a'):
             print "found links in tag"
@@ -111,6 +125,7 @@ def parse_music_page(url, artist):
 def get_album_tags(url, artist):
     """Find album's tags and add their urls and name to TAG_QUEUE."""
     soup = make_soup(url)
+    print "Got album soup."
     for tag in soup.find_all('a', class_='tag'):
         tag_url = tag.get('href')
         pretag_url = re.compile('(.*)(.bandcamp.com/tag/)')
@@ -126,6 +141,7 @@ def get_album_tags(url, artist):
    
 def parse_tag_pages(url, tag):
     soup = make_soup(url)
+    print "Got tag soup."
     for album in soup.find_all("li", class_="item"):
         album_url = album.a.get("href")
         band_name = album.find(class_='itemsubtext').get_text()
@@ -153,18 +169,8 @@ def create_sql_db(db_name):
     );""")
     return con, sql
 
-class TagCount:
-    """Used to create aggregate values in sql table."""
-    def __init__(self):
-        self.count = 0
-        
-    def step(self, value):
-        self.count += value
-        
-    def finalize(self):
-        return self.count
-
 class Artist:
+    """Instance of a bandcamp artist identified by unique name  +url."""
     def __init__(self, name, url):
          self.artist_name = name
          self.artist_url = url
@@ -214,6 +220,7 @@ class Artist:
         return  self.tag_dictionary[tag]
         
 class Session_Artists:
+    """List of all Artists created during runtime. Identified by the source Artist."""
     def __init__(self, name, url):
         self.source_artist = Artist(name, url)
         self.artist_list = []
@@ -245,17 +252,18 @@ class Timeout(Exception):
     pass
 
 
-parse_music_page(SOURCE_URL, SOURCE_ARTIST)
+
+time.clock()
+con, sql = create_sql_db(database_name)
+
+"""1. Get Source Artist's name and add albums from its music page to URL_QUEUE."""
 SOURCE_NAME = get_source_artist_name(SOURCE_URL)
 SESSION_ARTISTS = Session_Artists(SOURCE_NAME, SOURCE_URL)
 SOURCE_ARTIST = SESSION_ARTISTS.get_source_artist()
+parse_music_page(SOURCE_URL, SOURCE_ARTIST)
+print "\nSource Artist: %s\n" % SOURCE_NAME
 
-con, sql = create_sql_db("JapBreak")
-
-
-print "Source Artist: %s\n" % SOURCE_NAME
-
-"""Get tags from all source artist's albums."""
+"""2. Get tags from all source artist's albums."""
 print "Getting Source Artist tags.\n"
 while len(URL_QUEUE) > 0 :
     try:
@@ -265,7 +273,7 @@ while len(URL_QUEUE) > 0 :
     except (urllib2.URLError, urllib2.HTTPError) as e:
         print e
     
-"""Get artists from all source tag pages."""
+"""3. Get artists from all source tag pages."""
 print "Going through tag pages.\n"
 while len(TAG_QUEUE) > 0:
     try:
@@ -276,7 +284,7 @@ while len(TAG_QUEUE) > 0:
     except (urllib2.URLError, urllib2.HTTPError) as e:
         print e
        
-"""Go through SESSION_ARTISTS' music pages -> albums -> tags."""
+"""4. Go through SESSION_ARTISTS' music pages -> albums -> tags."""
 print "Going through artist pages.\n"
 print "SESSION_ARTISTS:", len(SESSION_ARTISTS.get_artist_list())
 count = 0
@@ -301,6 +309,8 @@ print SESSION_ARTISTS.session_len()
 print SESSION_ARTISTS.get_source_artist().get_tag_dictionary()
 print SOURCE_TAGS
 
+"""5. Create a heap from SESSION_ARTISTS sorted by common tag count, then get top
+10 matches. 100-# because heap pops smallest to largest."""
 SESSION_HEAP = []
 for artist in SESSION_ARTISTS.get_artist_list():
     tag_dict = artist.get_tag_dictionary()
@@ -310,4 +320,6 @@ for artist in SESSION_ARTISTS.get_artist_list():
     heapq.heappush(SESSION_HEAP, ((100-artist.get_common_tag_count()), artist.get_name(), artist.get_url()))
 for a in range(0,11):
     print heapq.heappop(SESSION_HEAP)
+    
+print "\nElapsed time:", ((time.clock())/60), "minutes"
     
