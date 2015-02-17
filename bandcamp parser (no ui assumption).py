@@ -2,49 +2,38 @@ import urllib2  # html scraper
 from bs4 import BeautifulSoup  # html parser
 import re  # regex module
 from collections import deque  # keep track of urls to scrape & parse
-import heapq
+import heapq  # used to sort artists once bandcamp parsing is finished 
 import sqlite3  # allows interaction with sql database (henceforth db)
 import time  # clock() measures run length. wait() used for request wait time
 import numpy  # random.exponential determines variable sleep time between server
 
-import sys  # exit quits program prematurely in event of error
-import datetime  # strptime and strftime convert between date formats
-import itertools  #count function is convenient iterator
-
-
-'''Script Sequence:
+"""Script Sequence:
     1. go to music page of the source band
-    2. get tags and tag counts from all albums on music page
+    2. get tags and tag counts from all albums on their music page
     3. for given tag, get band page for all artists listed
-        4. repeat step 3 for all reference band tags
+        4. repeat step 3 for all source artist tags
     5. for given session artist, get go through all albums counting tags
         6. repeat step 5 for all session artists
-    7. move information to database with (id, artist, tag, tag count)
-    8. sort database based on tag count'''
+    7. move artist data into a heap sorted by total_common_tag_count (see Artist class)
+    8. pop specified number off of the heap"""
     
 
 #Global Variables
-SOURCE_URL = "https://sandy.bandcamp.com/music"  #will become main program input
-database_name = "sandyalexg"
-URL_QUEUE = deque([])
-TAG_QUEUE = deque([])
+SOURCE_URL = "https://holybowlcut.bandcamp.com/music"  # "source" will always refer to aspects of this artist
+database_name = "holybowlcut"
+TAG_QUEUE = deque([])  # tag page urls from source artist albums added to this queue
+URL_QUEUE = deque([])  # all other urls added to this queue; generally will be band page
 OPENER = urllib2.build_opener()
 OPENER.addheaders = [('User-agent', 'Mozilla/5.0')]
-MAX_TAG_PAGES = 2
-MAX_ALBUMS = 10
-SOURCE_TAGS = []
-AVG_SECS_BETWEEN_REQUESTS = 3
+MAX_TAG_PAGES = 2  # how many pages of each tag to grab artists from
+MAX_ALBUMS = 10  # max number of albums to parse when looking at artists' music pages
+OUTPUT_AMOUNT = 10 # number of Artists to pop off of the heap after sorting
+SOURCE_TAGS = []  # holds strings of all tags found for the source artist's albums
+AVG_SECS_BETWEEN_REQUESTS = 3  # determines numpy exponential for server request wait time
 
-
-def main():
-    SOURCE_URL
-    URL_QUEUE = deque([])
-    TAG_QUEUE = deque([])
-    SOURCE_TAGS = []
-    pass
 
 def make_music_page_url(url):
-    """Converts band url into their music page."""
+    """Converts band url into their music page (a grid lists of all the artist's albums)."""
     if re.compile('/music').match(url) == None:
         return url + '/music'
     else:
@@ -65,7 +54,7 @@ def make_soup(url):
             return soup
         except:
             attempts += 1
-            time.sleep(numpy.random.exponential(AVG_SECS_BETWEEN_REQUESTS, 1))  #pause between server requests
+            time.sleep(numpy.random.exponential(AVG_SECS_BETWEEN_REQUESTS, 1))  # pause between server requests
     print "Failed to scrape %s" % url
     return None  # lets soup parser functions know that the scraping/soupifting failed
         
@@ -135,6 +124,7 @@ def get_album_tags(url, artist):
 def parse_tag_pages(url, tag):
     soup = make_soup(url)
     tag_artists = []  # will hold artists found under current tag. serching this faster than defaulting to searching SESSION_ARTISTS
+    tag_artists.append(SESSION_ARTISTS.get_source_artist().get_url())  # dont want the source artist being looked at again
     if soup != None:
         for album in soup.find_all("li", class_="item"):
             album_url = album.a.get("href")
@@ -147,7 +137,7 @@ def parse_tag_pages(url, tag):
         try:
             next_page = soup.find(class_='nextprev next').a.get('href')
             if int(next_page[-1:]) <= MAX_TAG_PAGES:
-                parse_tag_pages(url[ :-7] + next_page, tag)
+                parse_tag_pages(url[ :-7] + next_page, tag) # last 7 characters are ?page=#
             else:
                 print "Finished scraping %s: page limit reached." % tag 
         except AttributeError:
@@ -171,11 +161,10 @@ class Artist:
          self.artist_name = name
          self.artist_url = url
          self.tag_dictionary = {}
-         self.total_common_tag_count = 0
-         self.unique_common_tag_count = 0
+         self.total_common_tag_count = 0  # total count of all source tag appearances
+         self.unique_common_tag_count = 0  # unique tags shared with the source artist
         
-    def update_tags(self, tag):
-        #updates tag count or adds new tag to dictionary
+    def update_tags(self, tag): # updates tag count or adds new tag to dictionary
         self.total_common_tag_count += 1
         if tag not in self.tag_dictionary:
             self.unique_common_tag_count += 1
@@ -183,8 +172,7 @@ class Artist:
         else:
             self.tag_dictionary[tag] = self.tag_dictionary[tag] + 1
             
-    def same_artist(self, ref_artist):
-        #use unique band url to check if two artists are the same
+    def same_artist(self, ref_artist):  #use unique band url to check if two artists are the same
         if ref_artist.get_url() == self.artist_url:
             return True
         else:
@@ -208,8 +196,7 @@ class Artist:
     def get_tag_dictionary(self):
         return  self.tag_dictionary
         
-    def get_tag_count(self, tag):
-        #returns current count of the specified tag
+    def get_tag_count(self, tag):  # returns current count of the specified tag
         return  self.tag_dictionary[tag]
         
 class Session_Artists:
@@ -240,13 +227,9 @@ class Session_Artists:
         
     def session_len(self):
         return len(self.artist_list)
-        
-class Timeout(Exception):
-    pass
 
-
-
-time.clock()
+"""MAIN SCRIPT START:"""
+time.clock()  # set start time
 con, sql = create_sql_db(database_name)
 
 """1. Get Source Artist's name and add albums from its music page to URL_QUEUE."""
@@ -311,7 +294,7 @@ for artist in SESSION_ARTISTS.get_artist_list():
         data = (artist.get_name(), artist.get_url(), tag, tag_dict[tag])
         sql.execute('INSERT INTO artist_tags VALUES (?,?,?,?)', data)
     heapq.heappush(SESSION_HEAP, ((100-artist.get_common_tag_count()), artist.get_name(), artist.get_url()))
-for a in range(0,11):
+for a in range(0,(OUTPUT_AMOUNT+1)):
     print heapq.heappop(SESSION_HEAP)
     
 print "\nElapsed time:", time.clock(), "seconds"
